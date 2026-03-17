@@ -1,165 +1,166 @@
 """AP1 - Análise Exploratória de Dados (AIDS_Classification.csv).
 
-Versão sem dependências externas: usa apenas biblioteca padrão.
-Gera os resultados numéricos e produz o boxplot do Desafio 2 como imagem SVG.
+Gera limpeza, estatísticas e visualizações para os quatro desafios + exercício
+probabilístico descritos no enunciado.
 """
 
-from __future__ import annotations
-
-import csv
 from pathlib import Path
-from statistics import median
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+
 
 DATA_PATH = Path("AIDS_Classification.csv")
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
-def percentile(sorted_values: list[float], p: float) -> float:
-    if not sorted_values:
-        return 0.0
-    idx = (len(sorted_values) - 1) * p
-    lo = int(idx)
-    hi = min(lo + 1, len(sorted_values) - 1)
-    frac = idx - lo
-    return sorted_values[lo] * (1 - frac) + sorted_values[hi] * frac
+def carregar_e_limpar_dados(csv_path: Path) -> pd.DataFrame:
+    df = pd.read_csv(csv_path)
+
+    # 1) Valores ausentes
+    ausentes = df.isna().sum()
+    print("\n[Limpeza] Valores ausentes por coluna:\n", ausentes)
+
+    # Estratégia: remover linhas com NaN em variáveis críticas para a análise.
+    colunas_criticas = ["age", "wtkg", "cd40", "cd420", "infected", "symptom", "trt"]
+    antes = len(df)
+    df = df.dropna(subset=colunas_criticas).copy()
+    print(f"[Limpeza] Linhas removidas por NaN em colunas críticas: {antes - len(df)}")
+
+    # 2) Garantir tipos numéricos
+    for col in ["age", "wtkg", "cd40", "cd420"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Reaplicar limpeza se alguma conversão gerou NaN
+    antes = len(df)
+    df = df.dropna(subset=["age", "wtkg", "cd40", "cd420"]).copy()
+    print(f"[Limpeza] Linhas removidas por erro de tipo em colunas numéricas: {antes - len(df)}")
+
+    # 3) Nova coluna: variação absoluta do CD4
+    df["cd4_delta"] = (df["cd420"] - df["cd40"]).abs()
+
+    # Decodificação para leitura de relatório (mantendo colunas originais)
+    df["gender_label"] = df["gender"].map({0: "Feminino", 1: "Masculino"}).fillna(df["gender"].astype(str))
+    df["race_label"] = df["race"].map({0: "Não branca", 1: "Branca"}).fillna(df["race"].astype(str))
+
+    return df
 
 
-def box_stats(values: list[float]) -> dict[str, float | list[float]]:
-    vals = sorted(values)
-    q1 = percentile(vals, 0.25)
-    q2 = percentile(vals, 0.50)
-    q3 = percentile(vals, 0.75)
-    iqr = q3 - q1
-    low_fence = q1 - 1.5 * iqr
-    high_fence = q3 + 1.5 * iqr
+def desafio_2_boxplots(df: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    non_out = [v for v in vals if low_fence <= v <= high_fence]
-    whisk_low = min(non_out) if non_out else min(vals)
-    whisk_high = max(non_out) if non_out else max(vals)
-    outliers = [v for v in vals if v < low_fence or v > high_fence]
+    sns.boxplot(data=df, x="infected", y="wtkg", ax=axes[0])
+    axes[0].set_title("Distribuição de wtkg por status infected")
+    axes[0].set_xlabel("infected (0 = não, 1 = sim)")
+    axes[0].set_ylabel("Peso (kg)")
 
-    return {
-        "q1": q1,
-        "median": q2,
-        "q3": q3,
-        "whisk_low": whisk_low,
-        "whisk_high": whisk_high,
-        "outliers": outliers,
-        "min": vals[0],
-        "max": vals[-1],
-    }
+    sns.boxplot(data=df, x="infected", y="age", ax=axes[1])
+    axes[1].set_title("Distribuição de age por status infected")
+    axes[1].set_xlabel("infected (0 = não, 1 = sim)")
+    axes[1].set_ylabel("Idade (anos)")
 
+    fig.tight_layout()
+    fig.savefig(OUTPUT_DIR / "desafio2_boxplots.png", dpi=200)
+    plt.close(fig)
 
-def load_dataset(path: Path) -> list[dict[str, float | int | str]]:
-    rows: list[dict[str, float | int | str]] = []
-    with path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for raw in reader:
-            row: dict[str, float | int | str] = dict(raw)
-            for c in ["age", "wtkg", "cd40", "cd420"]:
-                row[c] = float(raw[c])
-            for c in ["infected", "symptom", "trt", "gender", "race"]:
-                row[c] = int(raw[c])
-            row["cd4_delta"] = abs(float(raw["cd420"]) - float(raw["cd40"]))
-            row["gender_label"] = "Feminino" if int(raw["gender"]) == 0 else "Masculino"
-            row["race_label"] = "Não branca" if int(raw["race"]) == 0 else "Branca"
-            rows.append(row)
-    return rows
+    resumo = (
+        df.groupby("infected")[["wtkg", "age"]]
+        .agg(["median", "min", "max"])
+        .round(2)
+    )
+    print("\n[Desafio 2] Resumo descritivo por infected:\n", resumo)
 
 
-def scale_y(v: float, y_min: float, y_max: float, top: float, height: float) -> float:
-    if y_max == y_min:
-        return top + height / 2
-    return top + (1 - (v - y_min) / (y_max - y_min)) * height
+def desafio_3_barras_tratamento(df: pd.DataFrame) -> pd.Series:
+    medias_cd420 = df.groupby("trt")["cd420"].mean().sort_values(ascending=False)
+    melhor_trt = medias_cd420.idxmax()
+
+    cores = ["#1f77b4" if trt != melhor_trt else "#d62728" for trt in medias_cd420.index]
+
+    plt.figure(figsize=(9, 6))
+    plt.bar(medias_cd420.index.astype(str), medias_cd420.values, color=cores)
+    plt.title("Média de CD4 na semana 20 por tratamento (trt)")
+    plt.xlabel("Tratamento (trt)")
+    plt.ylabel("Média de cd420")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "desafio3_barras_cd420_por_trt.png", dpi=200)
+    plt.close()
+
+    print("\n[Desafio 3] Média de cd420 por tratamento:\n", medias_cd420.round(2))
+    print(f"[Desafio 3] Melhor tratamento (maior média): trt = {melhor_trt}")
+    return medias_cd420
 
 
-def draw_single_box(svg: list[str], stats: dict[str, float | list[float]], x: float, box_w: float,
-                    y_min: float, y_max: float, top: float, height: float, color: str) -> None:
-    q1 = float(stats["q1"])
-    q3 = float(stats["q3"])
-    med = float(stats["median"])
-    wl = float(stats["whisk_low"])
-    wh = float(stats["whisk_high"])
+def desafio_4_scatter_correlacao(df: pd.DataFrame) -> float:
+    plt.figure(figsize=(9, 6))
+    sns.scatterplot(data=df, x="cd40", y="cd420", hue="symptom", alpha=0.7)
+    plt.title("Relação entre CD4 inicial (cd40) e CD4 na semana 20 (cd420)")
+    plt.xlabel("cd40")
+    plt.ylabel("cd420")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "desafio4_scatter_cd40_cd420.png", dpi=200)
+    plt.close()
 
-    y_q1 = scale_y(q1, y_min, y_max, top, height)
-    y_q3 = scale_y(q3, y_min, y_max, top, height)
-    y_med = scale_y(med, y_min, y_max, top, height)
-    y_wl = scale_y(wl, y_min, y_max, top, height)
-    y_wh = scale_y(wh, y_min, y_max, top, height)
-
-    left = x - box_w / 2
-    right = x + box_w / 2
-
-    svg.append(f'<rect x="{left:.1f}" y="{min(y_q1, y_q3):.1f}" width="{box_w:.1f}" height="{abs(y_q1-y_q3):.1f}" fill="{color}" fill-opacity="0.35" stroke="{color}"/>')
-    svg.append(f'<line x1="{left:.1f}" y1="{y_med:.1f}" x2="{right:.1f}" y2="{y_med:.1f}" stroke="#111" stroke-width="2"/>')
-    svg.append(f'<line x1="{x:.1f}" y1="{y_q3:.1f}" x2="{x:.1f}" y2="{y_wh:.1f}" stroke="#222"/>')
-    svg.append(f'<line x1="{x:.1f}" y1="{y_q1:.1f}" x2="{x:.1f}" y2="{y_wl:.1f}" stroke="#222"/>')
-    svg.append(f'<line x1="{x-box_w*0.25:.1f}" y1="{y_wh:.1f}" x2="{x+box_w*0.25:.1f}" y2="{y_wh:.1f}" stroke="#222"/>')
-    svg.append(f'<line x1="{x-box_w*0.25:.1f}" y1="{y_wl:.1f}" x2="{x+box_w*0.25:.1f}" y2="{y_wl:.1f}" stroke="#222"/>')
-
-    for out in stats["outliers"]:  # type: ignore[index]
-        y_out = scale_y(float(out), y_min, y_max, top, height)
-        svg.append(f'<circle cx="{x:.1f}" cy="{y_out:.1f}" r="2.3" fill="#cc0000"/>')
+    correlacao = df[["cd40", "cd420"]].corr().loc["cd40", "cd420"]
+    print(f"\n[Desafio 4] Correlação cd40 x cd420: {correlacao:.4f}")
+    return correlacao
 
 
-def generate_dual_boxplot_svg(rows: list[dict[str, float | int | str]], out_path: Path) -> None:
-    wt0 = [float(r["wtkg"]) for r in rows if int(r["infected"]) == 0]
-    wt1 = [float(r["wtkg"]) for r in rows if int(r["infected"]) == 1]
-    age0 = [float(r["age"]) for r in rows if int(r["infected"]) == 0]
-    age1 = [float(r["age"]) for r in rows if int(r["infected"]) == 1]
+def exercicio_probabilidades(df: pd.DataFrame) -> tuple[float, float, float]:
+    p_infectado = df["infected"].mean()
+    p_inf_dado_sym1 = df.loc[df["symptom"] == 1, "infected"].mean()
+    p_inf_dado_sym0 = df.loc[df["symptom"] == 0, "infected"].mean()
 
-    width, height = 1200, 560
-    svg: list[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="white"/>',
-        '<text x="600" y="34" text-anchor="middle" font-size="22" font-family="Arial" font-weight="bold">Desafio 2 - Box Plots por infected</text>',
-    ]
+    plt.figure(figsize=(7, 5))
+    labels = ["P(Infected | Symptom=1)", "P(Infected | Symptom=0)"]
+    valores = [p_inf_dado_sym1, p_inf_dado_sym0]
+    plt.bar(labels, valores, color=["#ff7f0e", "#2ca02c"])
+    plt.title("Comparação das probabilidades condicionais de infecção")
+    plt.ylabel("Probabilidade")
+    plt.ylim(0, max(valores) * 1.25)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "exercicio_probabilidades_sintomas.png", dpi=200)
+    plt.close()
 
-    panels = [
-        (80, 80, 500, 420, "Peso (wtkg)", wt0, wt1, "kg"),
-        (640, 80, 500, 420, "Idade (age)", age0, age1, "anos"),
-    ]
+    print(f"\n[Exercício Probabilidade] P(Infectado) = {p_infectado:.4f}")
+    print(f"[Exercício Probabilidade] P(Infected | Symptom=1) = {p_inf_dado_sym1:.4f}")
+    print(f"[Exercício Probabilidade] P(Infected | Symptom=0) = {p_inf_dado_sym0:.4f}")
 
-    for px, py, pw, ph, title, vals0, vals1, unit in panels:
-        y_min = min(vals0 + vals1)
-        y_max = max(vals0 + vals1)
-        s0 = box_stats(vals0)
-        s1 = box_stats(vals1)
-
-        svg.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" fill="none" stroke="#bbbbbb"/>')
-        svg.append(f'<text x="{px+pw/2}" y="{py-14}" text-anchor="middle" font-size="18" font-family="Arial">{title}</text>')
-
-        # eixo Y e marcas
-        for i in range(6):
-            v = y_min + (y_max - y_min) * i / 5
-            yy = scale_y(v, y_min, y_max, py + 20, ph - 60)
-            svg.append(f'<line x1="{px+40}" y1="{yy:.1f}" x2="{px+pw-20}" y2="{yy:.1f}" stroke="#efefef"/>')
-            svg.append(f'<text x="{px+34}" y="{yy+4:.1f}" text-anchor="end" font-size="11" font-family="Arial">{v:.1f}</text>')
-
-        axis_left = px + 40
-        axis_bottom = py + ph - 40
-        svg.append(f'<line x1="{axis_left}" y1="{py+20}" x2="{axis_left}" y2="{axis_bottom}" stroke="#222"/>')
-        svg.append(f'<line x1="{axis_left}" y1="{axis_bottom}" x2="{px+pw-20}" y2="{axis_bottom}" stroke="#222"/>')
-        svg.append(f'<text x="{axis_left-8}" y="{py+18}" text-anchor="end" font-size="11" font-family="Arial">{unit}</text>')
-
-        x0 = px + pw * 0.38
-        x1 = px + pw * 0.70
-        draw_single_box(svg, s0, x0, 56, y_min, y_max, py + 20, ph - 60, "#1f77b4")
-        draw_single_box(svg, s1, x1, 56, y_min, y_max, py + 20, ph - 60, "#ff7f0e")
-
-        svg.append(f'<text x="{x0}" y="{axis_bottom+20}" text-anchor="middle" font-size="12" font-family="Arial">infected=0</text>')
-        svg.append(f'<text x="{x1}" y="{axis_bottom+20}" text-anchor="middle" font-size="12" font-family="Arial">infected=1</text>')
-
-    svg.append('</svg>')
-    out_path.write_text("\n".join(svg), encoding="utf-8")
+    return p_infectado, p_inf_dado_sym1, p_inf_dado_sym0
 
 
 def main() -> None:
-    rows = load_dataset(DATA_PATH)
-    generate_dual_boxplot_svg(rows, OUTPUT_DIR / "desafio2_boxplots.svg")
-    print("Imagem gerada: outputs/desafio2_boxplots.svg")
-    print("Observação: o boxplot foi gerado em formato de imagem (SVG), não texto.")
+    sns.set_theme(style="whitegrid")
+    df = carregar_e_limpar_dados(DATA_PATH)
+
+    desafio_2_boxplots(df)
+    medias_cd420 = desafio_3_barras_tratamento(df)
+    correlacao = desafio_4_scatter_correlacao(df)
+    p_infectado, p_sym1, p_sym0 = exercicio_probabilidades(df)
+
+    print("\n=== STORYTELLING SUGERIDO ===")
+    print(
+        "1) Limpeza é alicerce: sem tipos numéricos corretos, médias e correlações podem ser calculadas "
+        "de forma incorreta (ou nem serem calculadas), gerando conclusões clínicas erradas sobre risco e eficácia."
+    )
+    print(
+        "2) Box plots: compare medianas e dispersões para verificar risco por idade/peso; outliers destacam casos "
+        "clínicos atípicos que merecem investigação individual."
+    )
+    print(
+        f"3) Barras de tratamento: trt={medias_cd420.idxmax()} teve melhor média de cd420 ({medias_cd420.max():.2f}), "
+        f"enquanto o pior foi {medias_cd420.idxmin()} ({medias_cd420.min():.2f})."
+    )
+    print(
+        f"4) Correlação cd40~cd420 = {correlacao:.2f}: tendência positiva moderada, indicando que estado inicial "
+        "do sistema imune influencia o desfecho após 20 semanas."
+    )
+    print(
+        f"5) Sintomas iniciais: risco com sintomas ({p_sym1:.2%}) vs sem sintomas ({p_sym0:.2%}); "
+        f"risco geral {p_infectado:.2%}. Ausência de sintomas reduz risco, mas não zera o perigo clínico."
+    )
 
 
 if __name__ == "__main__":
